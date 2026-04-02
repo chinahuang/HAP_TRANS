@@ -1,0 +1,35 @@
+{
+  "_comment": "Android Activity/Fragment 生命周期 → 鸿蒙 UIAbility/CustomComponent 生命周期",
+  "activity": {
+    "onCreate": "onCreate",
+    "onStart": "onForeground",
+    "onResume": "onForeground",
+    "onPause": "onBackground",
+    "onStop": "onBackground",
+    "onDestroy": "onDestroy",
+    "onSaveInstanceState": "// TODO: onSaveInstanceState → AppStorage/LocalStorage",
+    "onRestoreInstanceState": "// TODO: onRestoreInstanceState → AppStorage/LocalStorage",
+    "onActivityResult": "// TODO: onActivityResult → startAbilityForResult callback",
+    "onRequestPermissionsResult": "// TODO: onRequestPermissionsResult → requestPermissionsFromUser callback",
+    "onNewIntent": "onNewWant",
+    "onConfigurationChanged": "// TODO: onConfigurationChanged → @ohos.app.ability.ConfigurationConstant",
+    "onBackPressed": "// TODO: onBackPressed → Navigation back handler"
+  },
+  "fragment": {
+    "onAttach": "// TODO: onAttach → @Component lifecycle",
+    "onCreate": "aboutToAppear",
+    "onCreateView": "build",
+    "onViewCreated": "aboutToAppear",
+    "onActivityCreated": "aboutToAppear",
+    "onStart": "aboutToAppear",
+    "onResume": "aboutToAppear",
+    "onPause": "aboutToDisappear",
+    "onStop": "aboutToDisappear",
+    "onDestroyView": "aboutToDisappear",
+    "onDestroy": "aboutToDisappear",
+    "onDetach": "aboutToDisappear"
+  },
+  "viewmodel": {
+    "onCleared": "// TODO: ViewModel.onCleared → manual cleanup"
+  }
+}

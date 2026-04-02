@@ -1,0 +1,50 @@
+{
+  "Log.v": "hilog.debug(0x0000, 'TAG',",
+  "Log.d": "hilog.debug(0x0000, 'TAG',",
+  "Log.i": "hilog.info(0x0000, 'TAG',",
+  "Log.w": "hilog.warn(0x0000, 'TAG',",
+  "Log.e": "hilog.error(0x0000, 'TAG',",
+
+  "Toast.makeText": "promptAction.showToast",
+  ".show()": "",
+
+  "SharedPreferences": "preferences.Preferences",
+  "getSharedPreferences": "preferences.getPreferences",
+  "SharedPreferences.Editor": "preferences.Preferences",
+  ".putString": ".put",
+  ".putInt": ".put",
+  ".putBoolean": ".put",
+  ".putFloat": ".put",
+  ".putLong": ".put",
+  ".getString": ".get",
+  ".getInt": ".get",
+  ".getBoolean": ".get",
+  ".apply()": ".flush()",
+  ".commit()": ".flushSync()",
+
+  "Handler": "// TODO: Handler → setTimeout/setInterval",
+  "Looper": "// TODO: Looper → ArkTS event loop",
+  "AsyncTask": "// TODO: AsyncTask → async/await",
+  "Thread": "// TODO: Thread → taskpool.Task",
+  "Runnable": "// TODO: Runnable → () => {}",
+
+  "Intent": "Want",
+  "startActivity": "this.context.startAbility",
+  "startActivityForResult": "this.context.startAbilityForResult",
+  "finish()": "this.context.terminateSelf()",
+  "getIntent()": "this.want",
+
+  "Bundle": "Record<string, Object>",
+  "putExtra": "// TODO: putExtra → Want.parameters",
+  "getStringExtra": "// TODO: getStringExtra → want.parameters",
+
+  "getContext()": "getContext(this)",
+  "getApplicationContext()": "getContext(this)",
+  "requireContext()": "getContext(this)",
+
+  "R.string.": "$r('app.string.",
+  "R.color.": "$r('app.color.",
+  "R.drawable.": "$r('app.media.",
+  "R.layout.": "// TODO: R.layout",
+  "R.id.": "// TODO: R.id"
+}

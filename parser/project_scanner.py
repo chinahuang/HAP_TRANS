@@ -1,0 +1,121 @@
+"""
+扫描 Android 工程结构，收集所有需要转换的文件路径。
+"""
+import os
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+
+@dataclass
+class ActivityInfo:
+    name: str           # 完整类名，如 com.example.tasks.TasksActivity
+    simple_name: str    # 简单类名，如 TasksActivity
+    is_launcher: bool = False
+    label: str = ""
+
+
+@dataclass
+class ProjectInfo:
+    root: str                          # Android 工程根目录
+    app_module: str                    # app 模块目录
+    package_name: str = ""
+    app_name: str = ""
+    min_sdk: int = 21
+    target_sdk: int = 33
+    # 文件路径列表
+    manifest_path: str = ""
+    source_files: List[str] = field(default_factory=list)   # .kt / .java
+    layout_files: List[str] = field(default_factory=list)   # res/layout/*.xml
+    drawable_dirs: List[str] = field(default_factory=list)  # drawable*/ 目录
+    mipmap_dirs: List[str] = field(default_factory=list)    # mipmap*/ 目录
+    values_dir: str = ""                                    # res/values/
+    build_gradle: str = ""                                  # build.gradle(.kts)
+    # 解析结果
+    activities: List[ActivityInfo] = field(default_factory=list)
+    permissions: List[str] = field(default_factory=list)
+
+
+class ProjectScanner:
+    """扫描 Android 工程，返回 ProjectInfo。"""
+
+    def scan(self, root: str) -> ProjectInfo:
+        root = os.path.abspath(root)
+        app_module = self._find_app_module(root)
+        info = ProjectInfo(root=root, app_module=app_module)
+
+        src_main = os.path.join(app_module, "src", "main")
+
+        info.manifest_path = self._find_file(src_main, "AndroidManifest.xml")
+        info.build_gradle = self._find_build_gradle(app_module)
+        info.source_files = self._collect_source_files(src_main)
+        info.layout_files = self._collect_layout_files(src_main)
+        info.drawable_dirs = self._collect_res_dirs(src_main, "drawable")
+        info.mipmap_dirs = self._collect_res_dirs(src_main, "mipmap")
+        info.values_dir = os.path.join(src_main, "res", "values")
+
+        return info
+
+    # ------------------------------------------------------------------
+    def _find_app_module(self, root: str) -> str:
+        """找 app 模块目录（含 AndroidManifest.xml 的子目录）。"""
+        for name in ("app", "application"):
+            candidate = os.path.join(root, name)
+            manifest = os.path.join(candidate, "src", "main", "AndroidManifest.xml")
+            if os.path.isfile(manifest):
+                return candidate
+        # fallback: 在子目录中搜索
+        for entry in os.scandir(root):
+            if entry.is_dir():
+                manifest = os.path.join(entry.path, "src", "main", "AndroidManifest.xml")
+                if os.path.isfile(manifest):
+                    return entry.path
+        return root
+
+    def _find_file(self, base: str, name: str) -> str:
+        for dirpath, _, files in os.walk(base):
+            if name in files:
+                return os.path.join(dirpath, name)
+        return ""
+
+    def _find_build_gradle(self, app_module: str) -> str:
+        for name in ("build.gradle.kts", "build.gradle"):
+            path = os.path.join(app_module, name)
+            if os.path.isfile(path):
+                return path
+        return ""
+
+    def _collect_source_files(self, src_main: str) -> List[str]:
+        result = []
+        java_root = os.path.join(src_main, "java")
+        kotlin_root = os.path.join(src_main, "kotlin")
+        for base in (java_root, kotlin_root):
+            if not os.path.isdir(base):
+                continue
+            for dirpath, _, files in os.walk(base):
+                for f in files:
+                    if f.endswith((".kt", ".java")):
+                        result.append(os.path.join(dirpath, f))
+        return result
+
+    def _collect_layout_files(self, src_main: str) -> List[str]:
+        result = []
+        layout_root = os.path.join(src_main, "res")
+        if not os.path.isdir(layout_root):
+            return result
+        for entry in os.scandir(layout_root):
+            if entry.is_dir() and entry.name.startswith("layout"):
+                for dirpath, _, files in os.walk(entry.path):
+                    for f in files:
+                        if f.endswith(".xml"):
+                            result.append(os.path.join(dirpath, f))
+        return result
+
+    def _collect_res_dirs(self, src_main: str, prefix: str) -> List[str]:
+        result = []
+        res_root = os.path.join(src_main, "res")
+        if not os.path.isdir(res_root):
+            return result
+        for entry in os.scandir(res_root):
+            if entry.is_dir() and entry.name.startswith(prefix):
+                result.append(entry.path)
+        return result
