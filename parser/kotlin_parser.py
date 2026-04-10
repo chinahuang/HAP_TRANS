@@ -21,6 +21,7 @@ class SourceClass:
     is_fragment: bool = False
     is_viewmodel: bool = False
     is_adapter: bool = False
+    is_compose: bool = False
     raw_content: str = ""
 
 
@@ -84,6 +85,10 @@ class KotlinParser:
         sc.is_fragment = self._inherits(parents, imports, ("Fragment", "DialogFragment", "BottomSheetDialogFragment"))
         sc.is_viewmodel = self._inherits(parents, imports, ("ViewModel", "AndroidViewModel"))
         sc.is_adapter = self._inherits(parents, imports, ("RecyclerView.Adapter", "ListAdapter", "BaseAdapter"))
+        sc.is_compose = (
+            "@Composable" in content
+            or any("androidx.compose" in imp for imp in imports)
+        )
 
         return sc
 

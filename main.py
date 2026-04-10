@@ -126,6 +126,7 @@ def main():
     from transform.navigation_transform import NavigationTransform
     from transform.vector_transform import VectorTransform
     from transform.di_transform import DITransform
+    from transform.compose_transform import ComposeTransform
     from generator import ProjectGenerator
     from report import ReportGenerator
     from report.report_generator import ConversionStats
@@ -196,8 +197,23 @@ def main():
 
     # Kotlin/Java 转换（基础规则替换）
     if classes:
+        # Compose 文件单独处理
+        compose_map_data = load_json(os.path.join(mappings_dir, "compose_map.json"))
+        compose_tf = ComposeTransform(compose_map_data)
+        compose_classes = [c for c in classes if c.is_compose]
+        non_compose_classes = [c for c in classes if not c.is_compose]
+
+        compose_out = {}
+        if compose_classes:
+            for sc in compose_classes:
+                compose_out[sc.file_path] = compose_tf.transform_file(
+                    sc.raw_content, os.path.basename(sc.file_path)
+                )
+            print(f"      ✓ Compose UI: {len(compose_classes)} 个文件 → ArkUI @Component")
+
         kotlin_tf = KotlinTransform(api_map, lifecycle_map)
-        sources_out = kotlin_tf.transform_all(classes)
+        sources_out = kotlin_tf.transform_all(non_compose_classes)
+        sources_out.update(compose_out)  # 合并 Compose 转换结果
 
         # Navigation → Router
         nav_tf = NavigationTransform()
