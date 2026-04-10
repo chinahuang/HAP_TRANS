@@ -137,6 +137,7 @@ def main():
     from transform.service_transform import ServiceTransform
     from transform.retrofit_transform import RetrofitTransform, is_retrofit_file
     from transform.adapter_transform import AdapterTransform
+    from transform.media_transform import MediaTransform, is_media_file
     from generator import ProjectGenerator
     from report import ReportGenerator
     from report.report_generator import ConversionStats
@@ -243,6 +244,18 @@ def main():
         if svc_out:
             sources_out.update(svc_out)
             print(f"      ✓ Service/Receiver/Provider: {len(svc_out)} 个 → HarmonyOS Ability 存根")
+
+        # Android Media API → HarmonyOS AVSession / AVPlayer
+        media_tf = MediaTransform()
+        media_count = 0
+        for sc in non_compose_classes:
+            if is_media_file(sc.raw_content):
+                sources_out[sc.file_path] = media_tf.transform(
+                    sources_out.get(sc.file_path, sc.raw_content)
+                )
+                media_count += 1
+        if media_count:
+            print(f"      ✓ Media APIs: {media_count} 个文件 → AVSession/AVPlayer")
 
         # RecyclerView.Adapter / ListAdapter → @Component ForEach
         adapter_tf = AdapterTransform()
