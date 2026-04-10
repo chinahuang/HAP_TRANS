@@ -119,7 +119,7 @@ def main():
 
     from transform import (
         ManifestTransform, LayoutTransform, ResourceTransform,
-        ImageTransform, KotlinTransform, GradleTransform,
+        ImageTransform, KotlinTransform, GradleTransform, SelectorTransform,
     )
     from transform.room_transform import RoomTransform
     from transform.viewmodel_transform import ViewModelTransform
@@ -178,6 +178,13 @@ def main():
     stats.images_copied += vec_converted
     stats.images_skipped = max(0, stats.images_skipped - vec_converted)
     print(f"      ✓ Vector Drawable: {vec_converted} 个 → SVG，{vec_failed} 个转换失败")
+
+    # Selector Drawable → ArkTS StateStyles / 颜色函数
+    styles_dir = os.path.join(out, "entry", "src", "main", "ets", "styles")
+    sel_tf = SelectorTransform()
+    sel_converted, _ = sel_tf.convert_all(info.drawable_dirs, styles_dir)
+    if sel_converted:
+        print(f"      ✓ Selector Drawable: {sel_converted} 个 → ArkTS StateStyles")
 
     # 布局转换
     layout_tf = LayoutTransform(layout_map)
