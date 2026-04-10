@@ -18,6 +18,32 @@ _NESTED_TYPE = r'(?:[^<>]|<[^<>]*>)*'   # matches type with one level of nested 
 RE_MUTABLE_LIVE = re.compile(
     rf'private\s+val\s+(_\w+)\s*=\s*MutableLiveData<({_NESTED_TYPE})>\s*\(([^)]*)\)'
 )
+
+# StateFlow patterns
+RE_MUTABLE_STATE_FLOW = re.compile(
+    rf'private\s+val\s+(_\w+)\s*=\s*MutableStateFlow<({_NESTED_TYPE})>\s*\(([^)]*)\)'
+)
+RE_MUTABLE_STATE_FLOW_TYPED = re.compile(
+    rf'private\s+val\s+(_\w+)\s*:\s*MutableStateFlow<({_NESTED_TYPE})>\s*=\s*MutableStateFlow\s*\(([^)]*)\)'
+)
+RE_STATE_FLOW_EXPOSED = re.compile(
+    rf'val\s+(\w+):\s*StateFlow<({_NESTED_TYPE})>\s*=\s*(_\w+)\.asStateFlow\s*\(\)'
+)
+# SharedFlow / MutableSharedFlow (event bus pattern)
+RE_MUTABLE_SHARED_FLOW = re.compile(
+    rf'private\s+val\s+(_\w+)\s*=\s*MutableSharedFlow<({_NESTED_TYPE})>\s*\([^)]*\)'
+)
+RE_SHARED_FLOW_EXPOSED = re.compile(
+    rf'val\s+(\w+):\s*SharedFlow<({_NESTED_TYPE})>\s*=\s*(_\w+)\.asSharedFlow\s*\(\)'
+)
+# MutableStateFlow without explicit type parameter: _uiState = MutableStateFlow(SomeUiState())
+RE_MUTABLE_STATE_FLOW_UNTYPED = re.compile(
+    r'private\s+val\s+(_\w+)\s*=\s*MutableStateFlow\s*\(([^)]+)\)'
+)
+# StateFlow exposed val (to resolve type for untyped MutableStateFlow)
+RE_STATE_FLOW_TYPE = re.compile(
+    rf'val\s+(\w+):\s*StateFlow<({_NESTED_TYPE})>'
+)
 # public val (no underscore) e.g. val title = MutableLiveData<String>()
 RE_PUBLIC_MUTABLE_LIVE = re.compile(
     rf'^\s+val\s+(\w+)\s*=\s*MutableLiveData<({_NESTED_TYPE})>\s*\(\s*\)',
@@ -38,7 +64,8 @@ RE_LIVE_ONLY = re.compile(
     rf'private\s+val\s+(_\w+):\s*LiveData<({_NESTED_TYPE})>'
 )
 RE_VIEWMODEL_SCOPE = re.compile(
-    r'viewModelScope\.launch\s*\{([^}]+)\}', re.DOTALL
+    r'viewModelScope\.launch\s*\{((?:[^{}]|\{[^{}]*\})*)\}',
+    re.DOTALL,
 )
 RE_COROUTINE_SUSPEND = re.compile(
     r'suspend\s+fun\s+(\w+)\s*\(([^)]*)\)'
@@ -158,6 +185,46 @@ class ViewModelTransform:
                 else:
                     ktype = 'Object'
             _add_trace_field(name, ktype, init)
+
+        # MutableStateFlow<T>(init)
+        for m in RE_MUTABLE_STATE_FLOW.finditer(code):
+            priv = m.group(1)
+            pub_name = priv.lstrip('_')
+            ktype = m.group(2)
+            init = m.group(3)
+            _add_trace_field(pub_name, ktype, init)
+
+        for m in RE_MUTABLE_STATE_FLOW_TYPED.finditer(code):
+            priv = m.group(1)
+            pub_name = priv.lstrip('_')
+            ktype = m.group(2)
+            init = m.group(3)
+            _add_trace_field(pub_name, ktype, init)
+
+        # MutableSharedFlow (event bus / single-shot events)
+        for m in RE_MUTABLE_SHARED_FLOW.finditer(code):
+            priv = m.group(1)
+            pub_name = priv.lstrip('_')
+            ktype = m.group(2)
+            _add_trace_field(pub_name, ktype, '')
+
+        # MutableStateFlow without explicit type: infer from StateFlow<T> exposed val
+        # Build a map: _xxx → StateFlow type T
+        state_flow_types: Dict[str, str] = {}
+        for m in RE_STATE_FLOW_TYPE.finditer(code):
+            state_flow_types[m.group(1)] = m.group(2)  # pubName → type
+
+        for m in RE_MUTABLE_STATE_FLOW_UNTYPED.finditer(code):
+            priv = m.group(1)          # _uiState
+            pub_name = priv.lstrip('_')  # uiState
+            init = m.group(2)          # TasksUiState()
+            # Try to find the type from the exposed StateFlow val
+            ktype = state_flow_types.get(pub_name, '')
+            if not ktype:
+                # Infer from init value: TasksUiState() → TasksUiState
+                type_m = re.match(r'(\w+)\s*\(', init)
+                ktype = type_m.group(1) if type_m else 'any'
+            _add_trace_field(pub_name, ktype, init)
 
         for m in RE_LIVE_EXPOSED.finditer(code):
             pub = m.group(1)    # items
@@ -314,7 +381,31 @@ export class {class_name} {{{ctor_fields_str}
         """预处理整个文件代码，再提取方法。"""
         body = code
 
-        # LiveData value 赋值：_items.value = x → this.items = x
+        # ── StateFlow / SharedFlow ───────────────────────────────────
+        # _xxx.value = y  /  _xxx.update { ... }  /  _xxx.emit(y)
+        body = re.sub(r'_(\w+)\.value\s*=', lambda m: f"this.{m.group(1)} =", body)
+        body = re.sub(r'_(\w+)\.update\s*\{([^}]*)\}',
+                      lambda m: f"this.{m.group(1)} = {{...this.{m.group(1)}, {m.group(2).strip()}}}",
+                      body)
+        body = re.sub(r'_(\w+)\.emit\s*\(', lambda m: f"this.{m.group(1)} = (", body)
+        # xxx.collect { y -> ... } / xxx.collectLatest { y -> ... }
+        body = re.sub(
+            r'(\w+)\.collect(?:Latest|In)?\s*\{[^}]*\}',
+            lambda m: f"// TODO: @Watch({m.group(1)}) — migrate collect body manually",
+            body,
+        )
+        # flowOf(...).collect { } → similar
+        body = re.sub(
+            r'flowOf\([^)]*\)\.collect\s*\{[^}]*\}',
+            '// TODO: flowOf → migrate manually',
+            body,
+        )
+        # asStateFlow() / asSharedFlow() calls on exposing val → remove (field already traced)
+        body = re.sub(r'\.asStateFlow\(\)', '', body)
+        body = re.sub(r'\.asSharedFlow\(\)', '', body)
+
+        # ── LiveData ─────────────────────────────────────────────────
+        # _items.value = x → this.items = x
         body = re.sub(r'_(\w+)\.value\s*=', lambda m: f"this.{m.group(1)} =", body)
         body = re.sub(r'_(\w+)\.postValue\(', lambda m: f"this.{m.group(1)} = (", body)
         # Public MutableLiveData: title.value = x → title = x (underscore-free fields)
@@ -427,10 +518,42 @@ export class {class_name} {{{ctor_fields_str}
         code = re.sub(r'\bR\.color\.(\w+)\b', r"$r('app.color.\1')", code)
         code = re.sub(r'\bR\.dimen\.(\w+)\b', r"$r('app.float.\1')", code)
 
-        # 7. MutableLiveData<T>() → 合适的默认值
+        # 7. MutableLiveData / MutableStateFlow / MutableSharedFlow 残余 → 默认值
         code = re.sub(r'MutableLiveData<List<\w+>>\(\)', '[]', code)
         code = re.sub(r'MutableLiveData<(\w+)>\((.*?)\)', lambda m:
             m.group(2) if m.group(2) else 'null', code)
+        code = re.sub(r'MutableStateFlow<[^>]+>\(([^)]*)\)', lambda m:
+            m.group(1) if m.group(1) else 'null', code)
+        code = re.sub(r'MutableSharedFlow<[^>]+>\([^)]*\)', 'null', code)
+        # StateFlow<T> / SharedFlow<T> type annotations → 移除（字段已是 @Trace）
+        code = re.sub(r':\s*(?:Mutable)?(?:State|Shared)Flow<[^>]+>', '', code)
+        # .asStateFlow() / .asSharedFlow() 调用残余
+        code = re.sub(r'\.asStateFlow\(\)', '', code)
+        code = re.sub(r'\.asSharedFlow\(\)', '', code)
+        # flow.update { old -> old.copy(...) } / { it.copy(...) } → spread syntax
+        code = re.sub(
+            r'(\w+)\.update\s*\{\s*(?:\w+\s*->\s*)?\w*\.?copy\(([^)]*)\)\s*\}',
+            lambda m: (
+                "this.{} = {{...this.{}, {}}}".format(
+                    m.group(1), m.group(1),
+                    re.sub(r'(\w+)\s*=\s*', r'\1: ', m.group(2))  # = → :
+                )
+            ),
+            code
+        )
+        # Clean up any remaining it.copy(...) or xxx.copy(...) inside {..., copy()} spread
+        # Also strip optional lambda arrow: { currentState -> currentState.copy(f=v) }
+        code = re.sub(
+            r'(?:\w+\s*->\s*)?(?:it|\w+)\.copy\(([^)]*)\)\}',
+            lambda m: re.sub(r'(\w+)\s*=\s*', r'\1: ', m.group(1)) + '}',
+            code
+        )
+        # collect { ... } / collectLatest { ... } 残余
+        code = re.sub(
+            r'\.collect(?:Latest|In)?\s*\{[^}]*\}',
+            ' // TODO: @Watch — migrate collect block manually',
+            code,
+        )
 
         # 8. val/var 声明 → let/let
         code = re.sub(r'\bval\s+', 'const ', code)

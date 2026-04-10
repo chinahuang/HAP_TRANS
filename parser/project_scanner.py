@@ -1,7 +1,9 @@
 """
 扫描 Android 工程结构，收集所有需要转换的文件路径。
+支持单模块工程和多模块工程（读取 settings.gradle 获取子模块列表）。
 """
 import os
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -30,13 +32,15 @@ class ProjectInfo:
     mipmap_dirs: List[str] = field(default_factory=list)    # mipmap*/ 目录
     values_dir: str = ""                                    # res/values/
     build_gradle: str = ""                                  # build.gradle(.kts)
+    # 多模块扩展
+    extra_modules: List[str] = field(default_factory=list)  # 非 app 模块目录列表
     # 解析结果
     activities: List[ActivityInfo] = field(default_factory=list)
     permissions: List[str] = field(default_factory=list)
 
 
 class ProjectScanner:
-    """扫描 Android 工程，返回 ProjectInfo。"""
+    """扫描 Android 工程，返回 ProjectInfo。支持多模块工程。"""
 
     def scan(self, root: str) -> ProjectInfo:
         root = os.path.abspath(root)
@@ -53,9 +57,72 @@ class ProjectScanner:
         info.mipmap_dirs = self._collect_res_dirs(src_main, "mipmap")
         info.values_dir = os.path.join(src_main, "res", "values")
 
+        # ── 多模块支持 ──────────────────────────────────────────────
+        extra_modules = self._find_extra_modules(root, app_module)
+        info.extra_modules = extra_modules
+        for mod_dir in extra_modules:
+            mod_src_main = os.path.join(mod_dir, "src", "main")
+            if not os.path.isdir(mod_src_main):
+                continue
+            info.source_files.extend(self._collect_source_files(mod_src_main))
+            info.layout_files.extend(self._collect_layout_files(mod_src_main))
+            info.drawable_dirs.extend(self._collect_res_dirs(mod_src_main, "drawable"))
+            info.mipmap_dirs.extend(self._collect_res_dirs(mod_src_main, "mipmap"))
+            # 合并 values 资源（字符串/颜色等）
+            mod_values = os.path.join(mod_src_main, "res", "values")
+            if not info.values_dir and os.path.isdir(mod_values):
+                info.values_dir = mod_values
+
+        # 去重（同一文件可能被多路径收集到）
+        info.source_files = list(dict.fromkeys(info.source_files))
+        info.layout_files = list(dict.fromkeys(info.layout_files))
+        info.drawable_dirs = list(dict.fromkeys(info.drawable_dirs))
+        info.mipmap_dirs = list(dict.fromkeys(info.mipmap_dirs))
+
         return info
 
     # ------------------------------------------------------------------
+    def _find_extra_modules(self, root: str, app_module: str) -> List[str]:
+        """
+        读取 settings.gradle(.kts)，返回除 app 模块外的所有库/特性模块目录。
+        支持 Groovy 和 Kotlin DSL 两种写法：
+          include ':core:data', ':feature:tasks'  (Groovy)
+          include(":core:data", ":feature:tasks")  (KTS)
+        """
+        settings_paths = [
+            os.path.join(root, "settings.gradle.kts"),
+            os.path.join(root, "settings.gradle"),
+        ]
+        settings_content = ""
+        for p in settings_paths:
+            if os.path.isfile(p):
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as f:
+                        settings_content = f.read()
+                except OSError:
+                    pass
+                break
+
+        if not settings_content:
+            return []
+
+        # 从 include 语句中提取模块路径
+        # 匹配 include ':core:data', ':feature:tasks' 或 include(":core:data")
+        module_re = re.compile(r'["\']:([a-zA-Z0-9_:/.-]+)["\']')
+        modules = []
+        for line in settings_content.splitlines():
+            line = line.strip()
+            if not line.startswith("include"):
+                continue
+            for m in module_re.finditer(line):
+                module_path = m.group(1).replace(":", os.sep)
+                module_dir = os.path.join(root, module_path)
+                if (os.path.isdir(module_dir)
+                        and os.path.abspath(module_dir) != os.path.abspath(app_module)):
+                    modules.append(module_dir)
+
+        return modules
+
     def _find_app_module(self, root: str) -> str:
         """找 app 模块目录（含 AndroidManifest.xml 的子目录）。"""
         for name in ("app", "application"):

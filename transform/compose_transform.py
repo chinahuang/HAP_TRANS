@@ -304,9 +304,62 @@ def _split_type_default(rest: str) -> Tuple[str, str]:
 # 组件体转换
 # ─────────────────────────────────────────────────────────────
 
+_SCAFFOLD_NAMED_PARAMS = {
+    "topBar", "bottomBar", "floatingActionButton", "drawerContent",
+    "snackbarHost", "navigationIcon", "actions",
+}
+
+
+def _strip_scaffold_named_params_one(body: str, param: str) -> str:
+    """替换 body 中第一个 'param = { ... }' 具名 lambda 为 TODO 注释。"""
+    pat = re.compile(rf"\b{param}\s*=\s*\{{")
+    m = pat.search(body)
+    if not m:
+        return body
+    start = m.end() - 1  # '{' 位置
+    depth = 0
+    i = start
+    while i < len(body):
+        c = body[i]
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                # 跳过尾随逗号
+                j = end
+                while j < len(body) and body[j] in ' \t':
+                    j += 1
+                if j < len(body) and body[j] == ',':
+                    end = j + 1
+                return (body[:m.start()]
+                        + f"// TODO: {param} slot — add manually\n"
+                        + body[end:])
+        i += 1
+    return body
+
+
+def _strip_scaffold_named_params(body: str) -> str:
+    """
+    将 Scaffold / TopAppBar 等组件的具名 lambda 参数（topBar = { ... }）
+    替换为 TODO 注释，因为 ArkUI 没有直接对应槽位。
+    """
+    for param in _SCAFFOLD_NAMED_PARAMS:
+        for _ in range(20):  # 最多处理同一文件内 20 个同名槽位
+            new_body = _strip_scaffold_named_params_one(body, param)
+            if new_body == body:
+                break
+            body = new_body
+    return body
+
+
 def _convert_body(body: str, composable_map: Dict[str, str],
                   modifier_map: Dict[str, str]) -> str:
     """对函数体做逐行/逐模式转换。"""
+    # 0. 合并多行 Modifier 链
+    body = _join_multiline_modifiers(body)
+
     # 1. dp/sp 单位
     body = _convert_dp(body)
 
@@ -338,13 +391,14 @@ def _convert_body(body: str, composable_map: Dict[str, str],
     )
 
     # 7. Modifier 内联参数（composable 调用里的 modifier = Modifier.xxx）
+    # 使用支持一层嵌套括号的正则，避免 fillMaxSize() 中的 ')' 截断捕获
     def _inline_modifier(m):
         chain = m.group(1)
         converted = _convert_modifier_chain(chain, modifier_map)
         return f"/* modifier: {converted} */"
 
     body = re.sub(
-        r"modifier\s*=\s*(Modifier\b[^,)\n]+)",
+        r"modifier\s*=\s*(Modifier\b(?:[^,)\n(]|\([^)]*\))+)",
         _inline_modifier,
         body,
     )
@@ -361,6 +415,9 @@ def _convert_body(body: str, composable_map: Dict[str, str],
         body,
     )
 
+    # 8b. Scaffold 具名参数提取（topBar / floatingActionButton 等 → TODO 注释）
+    body = _strip_scaffold_named_params(body)
+
     # 9. Composable 调用 → ArkUI 组件（行级替换）
     for kt_name, ark_name in composable_map.items():
         # 替换独立出现的函数名（后跟括号或大括号）
@@ -370,25 +427,36 @@ def _convert_body(body: str, composable_map: Dict[str, str],
             body,
         )
 
-    # 10. Kotlin lambda 箭头清理：{ param -> body } → { body }
-    # 先清理单参数: { varName -> expr }
+    # 10a. LazyColumn items/itemsIndexed → ForEach（必须在 lambda 箭头清理之前，以捕获参数名）
+    body = re.sub(
+        r"items\s*\(\s*([\w.]+)\s*\)\s*\{\s*(?:(\w+)\s*->\s*)?",
+        lambda m: f"ForEach({m.group(1)}, ({m.group(2) or 'item'}) => {{",
+        body,
+    )
+    body = re.sub(
+        r"itemsIndexed\s*\(\s*([\w.]+)\s*\)\s*\{\s*(?:(?:index\s*,\s*)?(\w+)\s*->\s*)?",
+        lambda m: f"ForEach({m.group(1)}, ({m.group(2) or 'item'}, index) => {{",
+        body,
+    )
+
+    # 10b. Kotlin lambda 箭头清理：{ param -> body } → { body }
     body = re.sub(r"\{\s*\w+\s*->\s*", "{ ", body)
-    # 多参数: { a, b -> expr }
     body = re.sub(r"\{\s*\w+\s*,\s*\w+\s*->\s*", "{ ", body)
 
-    # 10. onClick = { block } → .onClick(() => { block })
+    # 10c. onClick = { block } → .onClick(() => { block })
     body = re.sub(
         r"onClick\s*=\s*\{([^}]*)\}",
         lambda m: f".onClick(() => {{{m.group(1)}}})",
         body,
     )
-    # onValueChange = { v -> handler }
+    # onValueChange = { v -> handler }（仅适用于 TextInput 等原生组件）
     body = re.sub(
         r"onValueChange\s*=\s*\{([^}]*)\}",
         lambda m: f".onChange((value: string) => {{{m.group(1)}}})",
         body,
     )
     # onCheckedChange = { v -> handler }
+    # 原生 Checkbox/Switch：转为 .onChange；自定义组件传参：保留为回调属性
     body = re.sub(
         r"onCheckedChange\s*=\s*\{([^}]*)\}",
         lambda m: f".onChange((isOn: boolean) => {{{m.group(1)}}})",
@@ -399,18 +467,6 @@ def _convert_body(body: str, composable_map: Dict[str, str],
     body = re.sub(r"text\s*=\s*\"([^\"]*)\"", r'"\1"', body)
 
     # 12. if (condition) { ... } else { ... } → 保持（ArkTS 支持）
-
-    # 13. LazyColumn items { ... } → ForEach
-    body = re.sub(
-        r"items\s*\(\s*(\w+)\s*\)\s*\{",
-        r"ForEach(\1, (item) => {",
-        body,
-    )
-    body = re.sub(
-        r"itemsIndexed\s*\(\s*(\w+)\s*\)\s*\{\s*(?:index\s*,\s*)?(\w+)\s*->",
-        r"ForEach(\1, (item, index) => {",
-        body,
-    )
 
     # 14. Color 常量
     body = re.sub(r"\bColor\.(\w+)\b", lambda m: _COLOR_CONST.get(m.group(1), f"'#{m.group(1)}'"), body)
@@ -449,6 +505,30 @@ _COLOR_CONST = {
     "Grey": "#888888", "Yellow": "#FFFF00", "Cyan": "#00FFFF",
     "Magenta": "#FF00FF", "Transparent": "#00000000",
 }
+
+
+def _join_multiline_modifiers(body: str) -> str:
+    """
+    将多行 Modifier 链合并为单行，例如：
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+    → modifier = Modifier.fillMaxWidth().padding(16.dp)
+    """
+    lines = body.split('\n')
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # 只要当前行含有 Modifier 且下一行以 '.' 开头，就合并
+        while (i + 1 < len(lines)
+               and 'Modifier' in line
+               and re.match(r'\s*\.\w+', lines[i + 1])):
+            line = line.rstrip() + lines[i + 1].strip()
+            i += 1
+        result.append(line)
+        i += 1
+    return '\n'.join(result)
 
 
 def _extract_state_declarations(body: str) -> Tuple[List[str], str]:

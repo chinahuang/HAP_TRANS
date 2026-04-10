@@ -55,6 +55,12 @@ def main():
     scanner = ProjectScanner()
     info = scanner.scan(src)
     print(f"      App 模块: {info.app_module}")
+    if info.extra_modules:
+        print(f"      子模块:   {len(info.extra_modules)} 个（多模块工程）")
+        for m in info.extra_modules[:5]:
+            print(f"               - {os.path.relpath(m, src)}")
+        if len(info.extra_modules) > 5:
+            print(f"               ... 以及 {len(info.extra_modules)-5} 个更多")
     print(f"      布局文件: {len(info.layout_files)} 个")
     print(f"      源文件:   {len(info.source_files)} 个")
 
@@ -127,6 +133,9 @@ def main():
     from transform.vector_transform import VectorTransform
     from transform.di_transform import DITransform
     from transform.compose_transform import ComposeTransform
+    from transform.flow_transform import FlowTransform
+    from transform.service_transform import ServiceTransform
+    from transform.retrofit_transform import RetrofitTransform, is_retrofit_file
     from generator import ProjectGenerator
     from report import ReportGenerator
     from report.report_generator import ConversionStats
@@ -213,6 +222,33 @@ def main():
 
         kotlin_tf = KotlinTransform(api_map, lifecycle_map)
         sources_out = kotlin_tf.transform_all(non_compose_classes)
+
+        # Retrofit / OkHttp → axios 网络层转换（优先于 KotlinTransform）
+        retrofit_tf = RetrofitTransform()
+        retrofit_classes = [c for c in non_compose_classes if is_retrofit_file(c)]
+        for sc in retrofit_classes:
+            result = retrofit_tf.transform(sc)
+            if result:
+                sources_out[sc.file_path] = result
+        if retrofit_classes:
+            print(f"      ✓ Retrofit/OkHttp: {len(retrofit_classes)} 个 → axios 网络服务")
+
+        # Service / BroadcastReceiver / ContentProvider / Worker → HarmonyOS stubs
+        svc_tf = ServiceTransform()
+        svc_out = svc_tf.transform_all(non_compose_classes)
+        if svc_out:
+            sources_out.update(svc_out)
+            print(f"      ✓ Service/Receiver/Provider: {len(svc_out)} 个 → HarmonyOS Ability 存根")
+
+        # Flow / StateFlow / SharedFlow UI 层订阅转换
+        flow_tf = FlowTransform()
+        ui_classes = [c for c in non_compose_classes
+                      if not c.is_viewmodel
+                      and any("collect" in c.raw_content or "lifecycleScope" in c.raw_content
+                              for _ in [None])]
+        for sc in ui_classes:
+            if sc.file_path in sources_out:
+                sources_out[sc.file_path] = flow_tf.transform(sources_out[sc.file_path])
         sources_out.update(compose_out)  # 合并 Compose 转换结果
 
         # Navigation → Router

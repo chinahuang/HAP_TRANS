@@ -29,9 +29,17 @@
   "com.squareup.okhttp3:logging-interceptor": "",
 
   "com.google.code.gson:gson": "",
+  "com.squareup.moshi:moshi": "",
+  "com.squareup.moshi:moshi-kotlin": "",
   "org.jetbrains.kotlinx:kotlinx-serialization-json": "",
 
+  "io.ktor:ktor-client-android": "@ohos/axios",
+  "io.ktor:ktor-client-core": "@ohos/axios",
+  "io.ktor:ktor-client-content-negotiation": "@ohos/axios",
+  "io.ktor:ktor-serialization-kotlinx-json": "",
+
   "io.coil-kt:coil": "",
+  "io.coil-kt:coil-compose": "",
   "com.github.bumptech.glide:glide": "",
   "com.squareup.picasso:picasso": "",
 
