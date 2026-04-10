@@ -924,8 +924,14 @@ class ArkTSCleanup:
         code = re.sub(r'\b\w+ArrayOf\s*\(([^)]*)\)', r'[\1]', code)
         # HashMap<K,V>() → new Map<K,V>()
         code = re.sub(r'\bHashMap<([^>]+)>\(\)', r'new Map<\1>()', code)
-        # Kotlin infix 'to' for Pair: a to b → [a, b]  (outside mapOf)
-        code = re.sub(r'\b(\w+)\s+to\s+(\w+)\b', r'[\1, \2]', code)
+        # Kotlin infix 'to' for Pair: a to b → [a, b]
+        # Only apply on non-comment lines to avoid corrupting Apache license headers etc.
+        def _pair_to(line: str) -> str:
+            stripped = line.lstrip()
+            if stripped.startswith('//') or stripped.startswith('*'):
+                return line
+            return re.sub(r'\b(\w+)\s+to\s+(\w+)\b', r'[\1, \2]', line)
+        code = '\n'.join(_pair_to(ln) for ln in code.splitlines())
         return code
 
     def _fix_ranges(self, code: str) -> str:

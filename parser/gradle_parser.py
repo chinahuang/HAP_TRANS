@@ -1,9 +1,10 @@
 """
 解析 build.gradle / build.gradle.kts，提取 SDK 版本和依赖列表。
 """
+import os
 import re
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 
 @dataclass
@@ -117,6 +118,55 @@ def _extract_named_blocks(content: str, outer_keyword: str) -> List[Tuple[str, s
     return results
 
 
+def _parse_version_catalog(toml_path: str) -> Dict[str, Tuple[str, str]]:
+    """
+    解析 gradle/libs.versions.toml，返回 {alias → (group, artifact)}。
+    alias 格式：连字符转点号，例如 "androidx-room-ktx" → key "androidx.room.ktx"。
+    """
+    try:
+        with open(toml_path, encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return {}
+
+    catalog: Dict[str, Tuple[str, str]] = {}
+    in_libraries = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('['):
+            in_libraries = stripped.startswith('[libraries]')
+            continue
+        if not in_libraries or stripped.startswith('#') or not stripped:
+            continue
+        # alias = { module = "group:artifact", version.ref = "..." }
+        m = re.match(r'(\S+)\s*=\s*\{([^}]+)\}', stripped)
+        if m:
+            alias = m.group(1).replace('-', '.')
+            body = m.group(2)
+            mod_m = re.search(r'module\s*=\s*"([^:]+):([^"]+)"', body)
+            if mod_m:
+                catalog[alias] = (mod_m.group(1), mod_m.group(2))
+            continue
+        # alias = "group:artifact:version"  (shorthand)
+        m = re.match(r'(\S+)\s*=\s*"([^:]+):([^:]+):([^"]+)"', stripped)
+        if m:
+            alias = m.group(1).replace('-', '.')
+            catalog[alias] = (m.group(2), m.group(3))
+    return catalog
+
+
+# libs.xxx.yyy  →  dots-separated alias reference
+_RE_CATALOG_DEP = re.compile(
+    r'(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*libs\.([a-zA-Z0-9_.]+)\s*\)'
+)
+
+# 从变量版本占位符中提取真实 group:artifact（丢弃版本变量）
+_RE_DEP_DOLLAR = re.compile(
+    r'(?:implementation|api|compileOnly|runtimeOnly)\s*["\']'
+    r'([^:]+):([^:]+):\$[\w.]+["\']'
+)
+
+
 class GradleParser:
     def parse(self, path: str) -> GradleInfo:
         info = GradleInfo()
@@ -128,14 +178,31 @@ class GradleParser:
         except OSError:
             return info
 
+        # ── Gradle Version Catalog (libs.versions.toml) ──────────────────
+        project_root = os.path.dirname(os.path.dirname(path))  # app/../
+        catalog: Dict[str, Tuple[str, str]] = {}
+        for toml_candidate in (
+            os.path.join(project_root, "gradle", "libs.versions.toml"),
+            os.path.join(os.path.dirname(path), "..", "gradle", "libs.versions.toml"),
+        ):
+            if os.path.isfile(toml_candidate):
+                catalog = _parse_version_catalog(toml_candidate)
+                # Also resolve SDK versions from [versions] section if referenced via libs
+                self._resolve_sdk_from_catalog(toml_candidate, info)
+                break
+
         for m in _RE_SDK.finditer(content):
-            key, val = m.group(1), int(m.group(2))
-            if key == "minSdk":
-                info.min_sdk = val
-            elif key == "targetSdk":
-                info.target_sdk = val
-            elif key == "compileSdk":
-                info.compile_sdk = val
+            key, val_str = m.group(1), m.group(2)
+            try:
+                val = int(val_str)
+                if key == "minSdk":
+                    info.min_sdk = val
+                elif key == "targetSdk":
+                    info.target_sdk = val
+                elif key == "compileSdk":
+                    info.compile_sdk = val
+            except ValueError:
+                pass  # libs.versions.compileSdk.get().toInt() — already resolved above
 
         m = _RE_APP_ID.search(content)
         if m:
@@ -149,9 +216,25 @@ class GradleParser:
         if m:
             info.version_name = m.group(1)
 
+        # Standard string-literal deps (group:artifact:version)
         for pattern in (_RE_DEP, _RE_DEP_KTS):
             for m in pattern.finditer(content):
                 dep = (m.group(1), m.group(2), m.group(3))
+                if dep not in info.dependencies:
+                    info.dependencies.append(dep)
+
+        # Deps with $variable version (strip version placeholder)
+        for m in _RE_DEP_DOLLAR.finditer(content):
+            dep = (m.group(1), m.group(2), "*")
+            if dep not in info.dependencies:
+                info.dependencies.append(dep)
+
+        # Version catalog: implementation(libs.androidx.room.ktx)
+        for m in _RE_CATALOG_DEP.finditer(content):
+            alias = m.group(1)
+            if alias in catalog:
+                group, artifact = catalog[alias]
+                dep = (group, artifact, "*")
                 if dep not in info.dependencies:
                     info.dependencies.append(dep)
 
@@ -198,3 +281,31 @@ class GradleParser:
             info.product_flavors.append(pf)
 
         return info
+
+    def _resolve_sdk_from_catalog(self, toml_path: str, info: GradleInfo) -> None:
+        """从 libs.versions.toml 的 [versions] 节读取 compileSdk/minSdk/targetSdk。"""
+        try:
+            with open(toml_path, encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            return
+        in_versions = False
+        sdk_map: Dict[str, int] = {}
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('['):
+                in_versions = stripped.startswith('[versions]')
+                continue
+            if not in_versions or stripped.startswith('#') or not stripped:
+                continue
+            m = re.match(r'(\w+)\s*=\s*"(\d+)"', stripped)
+            if m:
+                key, val = m.group(1).lower(), int(m.group(2))
+                sdk_map[key] = val
+        for key, attr in [
+            ('compilesdk', 'compile_sdk'),
+            ('minsdk', 'min_sdk'),
+            ('targetsdk', 'target_sdk'),
+        ]:
+            if key in sdk_map:
+                setattr(info, attr, sdk_map[key])

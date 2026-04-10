@@ -26,7 +26,18 @@
   "com.squareup.retrofit2:converter-gson": "@ohos/axios",
   "com.squareup.retrofit2:adapter-rxjava2": "",
   "com.squareup.okhttp3:okhttp": "@ohos/axios",
-  "com.squareup.okhttp3:logging-interceptor": "",
+  "com.squareup.okhttp3:logging-interceptor": "builtin",
+  "androidx.profileinstaller:profileinstaller": "builtin",
+  "androidx.compose.runtime:runtime": "builtin",
+  "androidx.compose.runtime:runtime-livedata": "builtin",
+  "androidx.compose.ui:ui": "builtin",
+  "androidx.compose.ui:ui-viewbinding": "builtin",
+  "androidx.compose.ui:ui-tooling-preview": "builtin",
+  "androidx.compose.foundation:foundation": "builtin",
+  "androidx.compose.foundation:foundation-layout": "builtin",
+  "androidx.compose.material3:material3": "builtin",
+  "androidx.compose.material:material": "builtin",
+  "com.google.accompanist:accompanist-systemuicontroller": "builtin",
 
   "com.google.code.gson:gson": "",
   "com.squareup.moshi:moshi": "",
@@ -52,6 +63,34 @@
   "org.jetbrains.kotlinx:kotlinx-coroutines-core": "builtin",
 
   "androidx.work:work-runtime-ktx": "@ohos/backgroundTaskManager",
+  "androidx.work:work-runtime": "@ohos/backgroundTaskManager",
+
+  "androidx.constraintlayout:constraintlayout": "builtin",
+  "androidx.constraintlayout:constraintlayout-compose": "builtin",
+
+  "androidx.lifecycle:lifecycle-extensions": "builtin",
+  "androidx.lifecycle:lifecycle-viewmodel-compose": "builtin",
+  "androidx.lifecycle:lifecycle-runtime-compose": "builtin",
+  "androidx.lifecycle:lifecycle-process": "builtin",
+  "androidx.hilt:hilt-navigation-compose": "builtin",
+  "androidx.hilt:hilt-lifecycle-viewmodel": "builtin",
+  "androidx.hilt:hilt-work": "builtin",
+  "com.google.dagger:hilt-android-compiler": "builtin",
+  "androidx.room:room-compiler": "builtin",
+
+  "com.android.support:multidex": "builtin",
+  "androidx.multidex:multidex": "builtin",
+
+  "androidx.activity:activity-compose": "builtin",
+  "androidx.navigation:navigation-compose": "@ohos/router",
+  "androidx.paging:paging-runtime-ktx": "",
+  "androidx.paging:paging-compose": "",
+
+  "org.jetbrains.kotlinx:kotlinx-coroutines-play-services": "builtin",
+  "org.jetbrains.kotlinx:kotlinx-serialization-core": "",
+
+  "com.github.bumptech.glide:compose": "",
+  "io.coil-kt:coil-network-okhttp": "",
 
   "com.google.android.gms:play-services-maps": "",
   "com.google.android.gms:play-services-location": "@ohos/geoLocationManager",

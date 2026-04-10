@@ -289,5 +289,5 @@ class KotlinTransform:
             f"// AUTO-CONVERTED from Android: {sc.file_path}\n"
             f"// Target: {kind}\n"
             f"// WARNING: This file requires manual review.\n"
-            f"// Search for TODO comments to find unconverted sections.\n\n"
+            f"// Search for 'TODO' comments; those mark unconverted sections.\n\n"
         )
