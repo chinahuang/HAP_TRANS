@@ -88,6 +88,13 @@ class ProjectGenerator:
         import re
         return "".join(w.capitalize() for w in re.split(r"[_\-]", name))
 
+    # SDK 默认调试签名路径（DevEco Studio 自带）
+    _SDK_TOOLCHAIN = (
+        "C:/software/devstudio/DevEco Studio/sdk/default/openharmony/toolchains"
+    )
+    _SDK_P12 = _SDK_TOOLCHAIN + "/lib/OpenHarmony.p12"
+    _SDK_SIGN_JAR = _SDK_TOOLCHAIN + "/lib/hap-sign-tool.jar"
+
     def _write_build_profile(self):
         data = {
             "app": {
@@ -115,6 +122,105 @@ class ProjectGenerator:
         path = os.path.join(self.out_dir, "build-profile.json5")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+
+    def generate_sign_script(self, bundle_name: str = "com.example.app") -> str:
+        """
+        生成 sign_hap.sh — 解决 9568404 "profile cert ≠ signing cert" 问题。
+
+        根本原因：用 hap-sign-tool.jar 签名时，.p7b provision profile 内嵌的证书
+        必须与实际签名用的 app cert 由同一 CA 签发，否则设备/模拟器验证失败（错误 9568404）。
+
+        脚本流程：
+          1. 用 SDK 的 OpenHarmony.p12（根 CA）颁发一个本地调试 app cert（app_debug.cer）
+          2. 用同一 CA 生成一个本地调试 profile（app_debug.p7b），内嵌同一 cert
+          3. 用 app cert + p12 对 .hap 文件签名
+
+        所有证书均使用 SDK 自带 OpenHarmony.p12（密码 123456）作为 CA。
+        """
+        sign_jar = self._SDK_SIGN_JAR
+        p12 = self._SDK_P12
+        p12_pwd = "123456"
+        key_alias = "OpenHarmony Application Release"
+
+        script = f"""\
+#!/usr/bin/env bash
+# sign_hap.sh — 修复 9568404 profile cert ≠ signing cert 问题
+# 用法: bash sign_hap.sh <path/to/unsigned.hap> [<output/signed.hap>]
+# 依赖: Java (JRE 11+)，DevEco Studio SDK
+
+set -e
+
+UNSIGNED="${{1:?Usage: $0 unsigned.hap [signed.hap]}}"
+SIGNED="${{2:-${{UNSIGNED%.hap}}_signed.hap}}"
+
+SIGN_JAR="{sign_jar}"
+P12="{p12}"
+P12_PWD="{p12_pwd}"
+KEY_ALIAS="{key_alias}"
+BUNDLE="{bundle_name}"
+
+WORK_DIR="$(mktemp -d)"
+trap "rm -rf $WORK_DIR" EXIT
+
+echo "[1/4] 生成调试 app cert CSR..."
+java -jar "$SIGN_JAR" generate-csr \\
+  -keyAlias "$KEY_ALIAS" \\
+  -keyPwd "$P12_PWD" \\
+  -keystoreFile "$P12" \\
+  -keystorePwd "$P12_PWD" \\
+  -subject "C=CN,O=OpenHarmony,OU=OpenHarmony Community,CN=$BUNDLE" \\
+  -signAlg "SHA256withECDSA" \\
+  -outFile "$WORK_DIR/app_debug.csr"
+
+echo "[2/4] CA 签发调试 app cert..."
+java -jar "$SIGN_JAR" sign-cert \\
+  -keyAlias "$KEY_ALIAS" \\
+  -keyPwd "$P12_PWD" \\
+  -keystoreFile "$P12" \\
+  -keystorePwd "$P12_PWD" \\
+  -issuer "C=CN,O=OpenHarmony,OU=OpenHarmony Community,CN=Application Signature Service CA" \\
+  -issuerKeyAlias "$KEY_ALIAS" \\
+  -issuerKeyPwd "$P12_PWD" \\
+  -subject "C=CN,O=OpenHarmony,OU=OpenHarmony Community,CN=$BUNDLE Debug" \\
+  -validity 365 \\
+  -signAlg "SHA256withECDSA" \\
+  -basicConstraintsPathLen -1 \\
+  -inFile "$WORK_DIR/app_debug.csr" \\
+  -outFile "$WORK_DIR/app_debug.cer"
+
+echo "[3/4] 生成调试 provision profile (.p7b)..."
+java -jar "$SIGN_JAR" sign-profile \\
+  -keyAlias "$KEY_ALIAS" \\
+  -keyPwd "$P12_PWD" \\
+  -keystoreFile "$P12" \\
+  -keystorePwd "$P12_PWD" \\
+  -mode "debug" \\
+  -bundleName "$BUNDLE" \\
+  -developmentCertificate "$WORK_DIR/app_debug.cer" \\
+  -distroType "app_gallery" \\
+  -signAlg "SHA256withECDSA" \\
+  -outFile "$WORK_DIR/app_debug.p7b"
+
+echo "[4/4] 签名 HAP..."
+java -jar "$SIGN_JAR" sign-app \\
+  -keyAlias "$KEY_ALIAS" \\
+  -keyPwd "$P12_PWD" \\
+  -keystoreFile "$P12" \\
+  -keystorePwd "$P12_PWD" \\
+  -appCertFile "$WORK_DIR/app_debug.cer" \\
+  -profileFile "$WORK_DIR/app_debug.p7b" \\
+  -inFile "$UNSIGNED" \\
+  -outFile "$SIGNED" \\
+  -signAlg "SHA256withECDSA" \\
+  -compatibleVersion 9
+
+echo "✓ 签名完成: $SIGNED"
+echo "  安装到设备: hdc install \\"$SIGNED\\""
+"""
+        sign_path = os.path.join(self.out_dir, "sign_hap.sh")
+        with open(sign_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(script)
+        return sign_path
 
     def _write_hvigor_config(self):
         hvigor = {

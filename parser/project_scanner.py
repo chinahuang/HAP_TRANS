@@ -151,17 +151,34 @@ class ProjectScanner:
                 return path
         return ""
 
+    # 跳过测试目录（src/test/ 和 src/androidTest/）
+    _TEST_DIR_NAMES = frozenset({"test", "androidTest", "testDebug", "testRelease"})
+
     def _collect_source_files(self, src_main: str) -> List[str]:
+        """收集 src/main 下的 .kt/.java 文件，跳过 test 目录。"""
         result = []
+        # src_main == .../src/main — 直接搜索 java/ kotlin/ 子树
         java_root = os.path.join(src_main, "java")
         kotlin_root = os.path.join(src_main, "kotlin")
         for base in (java_root, kotlin_root):
             if not os.path.isdir(base):
                 continue
-            for dirpath, _, files in os.walk(base):
+            for dirpath, dirs, files in os.walk(base):
+                # Prune test sub-directories (in-place) so os.walk skips them
+                dirs[:] = [d for d in dirs if d not in self._TEST_DIR_NAMES]
                 for f in files:
                     if f.endswith((".kt", ".java")):
                         result.append(os.path.join(dirpath, f))
+
+        # Also explicitly skip if caller accidentally passes src/ instead of src/main/
+        # by checking sibling test directories
+        src_root = os.path.dirname(src_main)
+        for test_dir_name in self._TEST_DIR_NAMES:
+            test_dir = os.path.join(src_root, test_dir_name)
+            if os.path.isdir(test_dir):
+                # Remove any accidentally included test files
+                result = [p for p in result if not p.startswith(test_dir)]
+
         return result
 
     def _collect_layout_files(self, src_main: str) -> List[str]:

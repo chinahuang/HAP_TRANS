@@ -35,7 +35,16 @@ class KotlinTransform:
         # 4. 替换类声明骨架
         code = self._transform_class_decl(sc, code)
 
-        # 5. 添加文件头注释
+        # 5. Intent → Want / router
+        code = self._transform_intent(code)
+
+        # 6. SharedPreferences → @ohos/preferences
+        code = self._transform_shared_preferences(code)
+
+        # 7. Runtime permissions → abilityAccessCtrl
+        code = self._transform_permissions(code)
+
+        # 8. 添加文件头注释
         header = self._build_header(sc)
         return header + code
 
@@ -160,6 +169,113 @@ class KotlinTransform:
                 r"// TODO: ArkTS state management\nclass \1 {",
                 code,
             )
+        return code
+
+    def _transform_intent(self, code: str) -> str:
+        """Android Intent → HarmonyOS Want / router."""
+        # Intent(context, SomeActivity::class.java) → Want object literal
+        code = re.sub(
+            r'Intent\s*\(\s*\w+\s*,\s*(\w+)::class\.java\s*\)',
+            lambda m: (
+                f'{{bundleName: "com.example.app", '
+                f'abilityName: "{m.group(1).replace("Activity", "Ability")}"}} as Want'
+            ),
+            code,
+        )
+        # intent.putExtra("key", value) → want.parameters["key"] = value
+        code = re.sub(
+            r'(\w+)\.putExtra\s*\(\s*("[\w.]+")\s*,\s*([^)]+)\)',
+            r'\1.parameters[\2] = \3',
+            code,
+        )
+        # intent.getStringExtra / getIntExtra / getBooleanExtra → parameters lookup
+        code = re.sub(
+            r'(?:getIntent\(\)|intent)\.get(?:String|Int|Boolean|Long|Float|Double)Extra\s*\(\s*("[\w.]+")\s*(?:,\s*[^)]+)?\)',
+            r'(router.getParams() as Record<string, Object>)[\1]',
+            code,
+        )
+        # startActivity(intent) → this.context.startAbility(want)
+        code = re.sub(
+            r'\bstartActivity\s*\(\s*(\w+)\s*\)',
+            r'this.context.startAbility(\1)',
+            code,
+        )
+        # startActivityForResult(intent, REQUEST_CODE) → TODO
+        code = re.sub(
+            r'\bstartActivityForResult\s*\([^)]+\)',
+            r'// TODO: startAbilityForResult() — see UIAbility.startAbilityForResult()',
+            code,
+        )
+        # finish() → this.context.terminateSelf()
+        code = re.sub(
+            r'\bfinish\s*\(\s*\)',
+            r'this.context.terminateSelf()',
+            code,
+        )
+        return code
+
+    def _transform_shared_preferences(self, code: str) -> str:
+        """SharedPreferences → @ohos/preferences."""
+        # getSharedPreferences("name", MODE_PRIVATE) → preferences.getPreferences(context, "name")
+        code = re.sub(
+            r'\bgetSharedPreferences\s*\(\s*("[\w.]+")\s*,\s*\w+\s*\)',
+            r'preferences.getPreferences(this.context, \1)',
+            code,
+        )
+        # prefs.getString("key", default) → prefs.getSync("key", default) as string
+        for kt_type, ts_type in [
+            ('String', 'string'), ('Int', 'number'), ('Boolean', 'boolean'),
+            ('Long', 'number'), ('Float', 'number'),
+        ]:
+            code = re.sub(
+                rf'\b(\w+)\.get{kt_type}\s*\(\s*("[\w."]+")\s*,\s*([^)]+)\)',
+                rf'(\1.getSync(\2, \3) as {ts_type})',
+                code,
+            )
+        # prefs.edit().putString("key", val).apply() / .commit()
+        code = re.sub(
+            r'(\w+)\.edit\(\)\s*(?:\.put(?:String|Int|Boolean|Long|Float)\s*\(\s*("[\w.]+")\s*,\s*([^)]+)\)\s*)+\.(?:apply|commit)\(\)',
+            lambda m: (
+                f'await {m.group(1)}.put({m.group(2)}, {m.group(3)});\n'
+                f'    await {m.group(1)}.flush()'
+            ),
+            code,
+        )
+        # Simpler single-call: prefs.edit().putXxx("k", v).apply()
+        code = re.sub(
+            r'(\w+)\.edit\(\)\.put(?:String|Int|Boolean|Long|Float)\s*\(\s*("[\w.]+")\s*,\s*([^)]+)\)\.(?:apply|commit)\(\)',
+            r'await \1.put(\2, \3); await \1.flush()',
+            code,
+        )
+        return code
+
+    def _transform_permissions(self, code: str) -> str:
+        """Android runtime permissions → abilityAccessCtrl.requestPermissionsFromUser."""
+        # ActivityCompat.requestPermissions(activity, arrayOf("android.permission.X"), CODE)
+        code = re.sub(
+            r'ActivityCompat\.requestPermissions\s*\([^,]+,\s*(arrayOf\([^)]+\))\s*,\s*(\d+)\s*\)',
+            r'// TODO: atManager.requestPermissionsFromUser(this.context, \1)\n'
+            r'    //   replace android.permission.X with ohos.permission.X',
+            code,
+        )
+        # ContextCompat.checkSelfPermission(ctx, "android.permission.X")
+        code = re.sub(
+            r'ContextCompat\.checkSelfPermission\s*\([^,]+,\s*("[\w."]+")\s*\)',
+            r'/* TODO: atManager.checkAccessToken(tokenId, \1) */(PackageManager.PERMISSION_DENIED)',
+            code,
+        )
+        # shouldShowRequestPermissionRationale → TODO
+        code = re.sub(
+            r'\bshouldShowRequestPermissionRationale\s*\([^)]+\)',
+            r'/* TODO: no direct equivalent — skip or implement custom UI */ false',
+            code,
+        )
+        # onRequestPermissionsResult → TODO comment
+        code = re.sub(
+            r'\boverride\s+fun\s+onRequestPermissionsResult\b',
+            r'// TODO: onRequestPermissionsResult → atManager callback\n    fun onRequestPermissionsResult_UNUSED',
+            code,
+        )
         return code
 
     def _build_header(self, sc: SourceClass) -> str:

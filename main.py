@@ -136,6 +136,7 @@ def main():
     from transform.flow_transform import FlowTransform
     from transform.service_transform import ServiceTransform
     from transform.retrofit_transform import RetrofitTransform, is_retrofit_file
+    from transform.adapter_transform import AdapterTransform
     from generator import ProjectGenerator
     from report import ReportGenerator
     from report.report_generator import ConversionStats
@@ -156,6 +157,9 @@ def main():
     # 创建工程骨架
     gen = ProjectGenerator(out, info)
     gen.create_skeleton()
+    # 生成 HAP 签名脚本（解决 9568404 profile cert ≠ signing cert 问题）
+    sign_script = gen.generate_sign_script(bundle_name=info.package_name or "com.example.app")
+    print(f"      ✓ 签名脚本: {os.path.relpath(sign_script, out)}")
 
     # Manifest → module.json5 + app.json5
     manifest_tf = ManifestTransform(permission_map)
@@ -239,6 +243,15 @@ def main():
         if svc_out:
             sources_out.update(svc_out)
             print(f"      ✓ Service/Receiver/Provider: {len(svc_out)} 个 → HarmonyOS Ability 存根")
+
+        # RecyclerView.Adapter / ListAdapter → @Component ForEach
+        adapter_tf = AdapterTransform()
+        for sc in non_compose_classes:
+            if adapter_tf.can_transform(sc.raw_content):
+                sources_out[sc.file_path] = adapter_tf.transform(sources_out.get(sc.file_path, sc.raw_content))
+        adapter_count = sum(1 for c in non_compose_classes if adapter_tf.can_transform(c.raw_content))
+        if adapter_count:
+            print(f"      ✓ RecyclerView.Adapter: {adapter_count} 个 → ArkUI ForEach @Component")
 
         # Flow / StateFlow / SharedFlow UI 层订阅转换
         flow_tf = FlowTransform()
@@ -349,6 +362,10 @@ def main():
     stats.deps_unmapped = len(unmapped)
     stats.deps_mapped = stats.deps_total - stats.deps_unmapped
     print(f"      ✓ 依赖: {stats.deps_mapped}/{stats.deps_total} 已映射")
+    if gradle_tf.write_build_variants_note(gradle_info, out):
+        bt_count = len(gradle_info.build_types)
+        pf_count = len(gradle_info.product_flavors)
+        print(f"      ✓ Build variants: {bt_count} buildTypes, {pf_count} productFlavors → build_variants_note.md")
 
     # 生成报告
     report_gen = ReportGenerator()

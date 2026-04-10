@@ -44,6 +44,16 @@ class ArkTSCleanup:
         code = self._convert_primary_constructor(code)
         code = self._fix_expression_body_methods(code)
         code = self._remove_coroutine_wrappers(code)
+        code = self._fix_non_null_assertions(code)
+        code = self._fix_elvis_operator(code)
+        code = self._convert_when_expression(code)
+        code = self._convert_scope_functions(code)
+        code = self._fix_string_format(code)
+        code = self._fix_collections(code)
+        code = self._fix_ranges(code)
+        code = self._fix_take_if_unless(code)
+        code = self._fix_custom_view(code)
+        code = self._fix_animations(code)
         code = self._fix_elvis_return(code)
         code = self._fix_kotlin_idioms(code)
         code = self._fix_lambda_closings(code)
@@ -745,6 +755,271 @@ class ArkTSCleanup:
         )
         # standalone: expr ?? return
         code = re.sub(r'\b(\w[\w.]*)\s*\?\?\s*return\b', r'if (\1 == null) return', code)
+        return code
+
+    def _fix_non_null_assertions(self, code: str) -> str:
+        """x!! → x  (ArkTS 用类型收窄替代，!! 是无效语法)"""
+        # x!!.method() → x.method()
+        code = re.sub(r'(\w[\w.]*)\!\!\.', r'\1.', code)
+        # x!! at end of expression → x
+        code = re.sub(r'(\w[\w.]*)\!\!', r'\1', code)
+        return code
+
+    def _fix_elvis_operator(self, code: str) -> str:
+        """?: → ??  (Kotlin elvis → JS nullish coalescing)"""
+        # Simple x ?: y → x ?? y
+        code = re.sub(r'\?\s*:', '??', code)
+        return code
+
+    def _convert_when_expression(self, code: str) -> str:
+        """
+        when (x) {
+            A -> expr
+            B, C -> expr
+            else -> expr
+        } → switch/if-else
+        """
+        def replace_when(m):
+            subject = m.group(1).strip()
+            body = m.group(2)
+            cases = []
+            arm_re = re.compile(
+                r'([\w.,\s"\']+?)\s*->\s*(\{[^}]*\}|[^\n,}]+)',
+                re.DOTALL,
+            )
+            for arm in arm_re.finditer(body):
+                pats = [p.strip() for p in arm.group(1).split(',')]
+                act = arm.group(2).strip()
+                for pat in pats:
+                    kw = "default" if pat == "else" else f"case {pat}"
+                    if act.startswith('{'):
+                        inner = act[1:-1].strip()
+                        cases.append(f"  {kw}: {{\n    {inner}\n    break;\n  }}")
+                    else:
+                        cases.append(f"  {kw}: {act}; break;")
+            if not cases:
+                return m.group(0)
+            return f"switch ({subject}) {{\n" + "\n".join(cases) + "\n}"
+
+        return re.sub(
+            r'\bwhen\s*\(([^)]+)\)\s*\{((?:[^{}]|\{[^{}]*\})*)\}',
+            replace_when,
+            code,
+            flags=re.DOTALL,
+        )
+
+    def _convert_scope_functions(self, code: str) -> str:
+        """
+        Kotlin 作用域函数 → ArkTS 等价写法（单行形式）。
+        x.let { it -> body }   → (it => { body })(x)
+        x.also { it -> body }  → ((() => { body })(), x)
+        x.apply { body }       → Object.assign(x, { ... }) — TODO
+        x.run { body }         → (() => { body })()
+        with(x) { body }       → (x => { body })(x)
+        """
+        # x?.let { varName -> expr } (nullable, single line)
+        code = re.sub(
+            r'(\w[\w.]*)\?\.let\s*\{\s*(\w+)\s*->\s*([^}]+?)\s*\}',
+            lambda m: f'(({m.group(2)}) => {{ {m.group(3).strip()} }})({m.group(1)})',
+            code,
+        )
+        # x.let { varName -> expr } (non-nullable, single line)
+        code = re.sub(
+            r'(\w[\w.]*)\.let\s*\{\s*(\w+)\s*->\s*([^}]+?)\s*\}',
+            lambda m: f'(({m.group(2)}) => {{ {m.group(3).strip()} }})({m.group(1)})',
+            code,
+        )
+        # x.let { expr using 'it' }
+        code = re.sub(
+            r'(\w[\w.]*)\.let\s*\{\s*([^}]+?)\s*\}',
+            lambda m: f'((it) => {{ {m.group(2).strip()} }})({m.group(1)})',
+            code,
+        )
+        # x.also { it -> sideEffect } — evaluate x, run side effect, return x
+        code = re.sub(
+            r'(\w[\w.]*)\.also\s*\{\s*(?:\w+\s*->\s*)?([^}]+?)\s*\}',
+            lambda m: f'((() => {{ const _it = {m.group(1)}; {m.group(2).strip()}; return _it; }})())',
+            code,
+        )
+        # x.apply { fields } → Object.assign(x, { ... })
+        code = re.sub(
+            r'(\w[\w.]*)\.apply\s*\{([^}]*)\}',
+            lambda m: f'/* apply */ Object.assign({m.group(1)}, {{ {m.group(2).strip()} }})',
+            code,
+        )
+        # x.run { body } → (() => { body })()
+        code = re.sub(
+            r'(\w[\w.]*)\.run\s*\{([^}]*)\}',
+            lambda m: f'((() => {{ {m.group(2).strip()} }})())',
+            code,
+        )
+        # with(x) { body }
+        code = re.sub(
+            r'\bwith\s*\(([^)]+)\)\s*\{([^}]*)\}',
+            lambda m: f'((_with) => {{ {m.group(2).strip()} }})({m.group(1).strip()})',
+            code,
+        )
+        return code
+
+    def _fix_string_format(self, code: str) -> str:
+        """
+        String.format("Hello %s, you have %d items", name, count)
+        → `Hello ${name}, you have ${count} items`
+        """
+        def repl(m):
+            fmt = m.group(1)
+            args_raw = m.group(2).strip()
+            # Split args by comma (top-level only)
+            args = []
+            depth = 0
+            cur = []
+            for ch in args_raw:
+                if ch in '(<[':
+                    depth += 1
+                elif ch in ')>]':
+                    depth -= 1
+                if ch == ',' and depth == 0:
+                    args.append(''.join(cur).strip())
+                    cur = []
+                else:
+                    cur.append(ch)
+            if cur:
+                args.append(''.join(cur).strip())
+            # Replace format specifiers with ${arg}
+            idx = 0
+            def sub_spec(sm):
+                nonlocal idx
+                if idx < len(args):
+                    result_part = '${' + args[idx] + '}'
+                    idx += 1
+                    return result_part
+                return sm.group(0)
+            result_str = re.sub(r'%[sdfc.0-9*]+', sub_spec, fmt)
+            return f'`{result_str}`'
+
+        return re.sub(
+            r'String\.format\s*\(\s*"([^"]*)"((?:\s*,\s*[^,)][^)]*)*)\)',
+            repl,
+            code,
+        )
+
+    def _fix_collections(self, code: str) -> str:
+        """Kotlin 集合字面量 → ArkTS 等价。"""
+        # mapOf("a" to 1, "b" to 2) → {"a": 1, "b": 2}
+        def map_repl(m):
+            pairs_raw = m.group(1)
+            # a to b → "a": b
+            pairs = re.sub(r'(\w+|"[^"]*")\s+to\s+', r'\1: ', pairs_raw)
+            return '{' + pairs + '}'
+        code = re.sub(r'\bmapOf\s*\(([^)]*)\)', map_repl, code)
+        code = re.sub(r'\bhashMapOf\s*\(([^)]*)\)', map_repl, code)
+        code = re.sub(r'\bmutableMapOf\s*\(([^)]*)\)', map_repl, code)
+        # arrayOf(a, b, c) → [a, b, c]
+        code = re.sub(r'\barrayOf\s*\(([^)]*)\)', r'[\1]', code)
+        # setOf(a, b) → new Set([a, b])
+        code = re.sub(r'\bsetOf\s*\(([^)]*)\)', r'new Set([\1])', code)
+        code = re.sub(r'\bmutableSetOf\s*\(([^)]*)\)', r'new Set([\1])', code)
+        # listOf already handled in _fix_kotlin_idioms
+        # intArrayOf / floatArrayOf etc.
+        code = re.sub(r'\b\w+ArrayOf\s*\(([^)]*)\)', r'[\1]', code)
+        # HashMap<K,V>() → new Map<K,V>()
+        code = re.sub(r'\bHashMap<([^>]+)>\(\)', r'new Map<\1>()', code)
+        # Kotlin infix 'to' for Pair: a to b → [a, b]  (outside mapOf)
+        code = re.sub(r'\b(\w+)\s+to\s+(\w+)\b', r'[\1, \2]', code)
+        return code
+
+    def _fix_ranges(self, code: str) -> str:
+        """
+        (0..n).forEach { i -> body }  →  for (let i = 0; i <= n; i++) { body }
+        (0 until n).forEach { i -> body }  →  for (let i = 0; i < n; i++) { body }
+        """
+        # (a..b).forEach { i -> body }
+        code = re.sub(
+            r'\((\w+)\.\.(\w+)\)\.forEach\s*\{\s*(\w+)\s*->\s*([^}]*)\}',
+            lambda m: f'for (let {m.group(3)} = {m.group(1)}; {m.group(3)} <= {m.group(2)}; {m.group(3)}++) {{ {m.group(4).strip()} }}',
+            code,
+        )
+        # (a until b).forEach { i -> body }
+        code = re.sub(
+            r'\((\w+)\s+until\s+(\w+)\)\.forEach\s*\{\s*(\w+)\s*->\s*([^}]*)\}',
+            lambda m: f'for (let {m.group(3)} = {m.group(1)}; {m.group(3)} < {m.group(2)}; {m.group(3)}++) {{ {m.group(4).strip()} }}',
+            code,
+        )
+        # for (i in 0..n) → for (let i = 0; i <= n; i++)
+        code = re.sub(
+            r'\bfor\s*\(\s*(\w+)\s+in\s+(\d+)\s*\.\.\s*(\w+)\s*\)',
+            r'for (let \1 = \2; \1 <= \3; \1++)',
+            code,
+        )
+        # for (i in 0 until n) → for (let i = 0; i < n; i++)
+        code = re.sub(
+            r'\bfor\s*\(\s*(\w+)\s+in\s+(\d+)\s+until\s+(\w+)\s*\)',
+            r'for (let \1 = \2; \1 < \3; \1++)',
+            code,
+        )
+        return code
+
+    def _fix_take_if_unless(self, code: str) -> str:
+        """
+        x.takeIf { pred } → (pred ? x : null)
+        x.takeUnless { pred } → (pred ? null : x)
+        """
+        code = re.sub(
+            r'(\w[\w.]*)\.takeIf\s*\{\s*([^}]+)\s*\}',
+            lambda m: f'({m.group(2).strip()} ? {m.group(1)} : null)',
+            code,
+        )
+        code = re.sub(
+            r'(\w[\w.]*)\.takeUnless\s*\{\s*([^}]+)\s*\}',
+            lambda m: f'({m.group(2).strip()} ? null : {m.group(1)})',
+            code,
+        )
+        return code
+
+    def _fix_custom_view(self, code: str) -> str:
+        """
+        继承 View/ViewGroup 的自定义 View → 生成 ArkUI @Component struct 存根。
+        """
+        # Detect custom view class: class Foo extends View / ViewGroup / etc.
+        if not re.search(r'extends\s+(?:View|ViewGroup|FrameLayout|LinearLayout|RelativeLayout|ConstraintLayout|RecyclerView)\b', code):
+            return code
+        # Add TODO header if not already present
+        if '// TODO: CustomView' not in code:
+            code = '// TODO: Convert custom View → ArkUI @Component struct\n// See: https://developer.harmonyos.com/cn/docs/documentation/doc-guides/arkui-overview-0000001281480754\n' + code
+        return code
+
+    def _fix_animations(self, code: str) -> str:
+        """Android 动画 API → ArkUI animateTo TODO。"""
+        # ObjectAnimator
+        code = re.sub(
+            r'\bObjectAnimator\.\w+\([^)]*\)(?:\.\w+\([^)]*\))*\.start\(\)',
+            '/* TODO: animateTo(() => { /* properties */ }, { duration: 300 }) */',
+            code,
+        )
+        # ValueAnimator
+        code = re.sub(
+            r'\bValueAnimator\.ofFloat\([^)]*\)',
+            '/* TODO: ValueAnimator → animateTo() */',
+            code,
+        )
+        # AnimatorSet
+        code = re.sub(
+            r'\bAnimatorSet\(\)',
+            '/* TODO: AnimatorSet → chained animateTo() calls */',
+            code,
+        )
+        # ViewPropertyAnimator: view.animate().alpha(0f).duration(300).start()
+        code = re.sub(
+            r'(\w+)\.animate\(\)(?:\.\w+\([^)]*\))+',
+            lambda m: f'/* TODO: {m.group(1)}.animate() → animateTo() */',
+            code,
+        )
+        # TransitionManager
+        code = re.sub(
+            r'\bTransitionManager\.\w+\([^)]*\)',
+            '/* TODO: TransitionManager → ArkUI transition() */',
+            code,
+        )
         return code
 
     def _fix_kotlin_idioms(self, code: str) -> str:
