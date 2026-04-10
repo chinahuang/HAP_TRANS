@@ -1,13 +1,13 @@
 {
   "_comment": "Android Gradle 依赖 → 鸿蒙 oh-package.json5 依赖。空字符串表示无对应包（需手动处理）。",
 
-  "androidx.appcompat:appcompat": "",
-  "androidx.core:core-ktx": "",
-  "androidx.fragment:fragment-ktx": "",
-  "androidx.activity:activity-ktx": "",
-  "androidx.lifecycle:lifecycle-viewmodel-ktx": "",
-  "androidx.lifecycle:lifecycle-livedata-ktx": "",
-  "androidx.lifecycle:lifecycle-runtime-ktx": "",
+  "androidx.appcompat:appcompat": "builtin",
+  "androidx.core:core-ktx": "builtin",
+  "androidx.fragment:fragment-ktx": "builtin",
+  "androidx.activity:activity-ktx": "builtin",
+  "androidx.lifecycle:lifecycle-viewmodel-ktx": "builtin",
+  "androidx.lifecycle:lifecycle-livedata-ktx": "builtin",
+  "androidx.lifecycle:lifecycle-runtime-ktx": "builtin",
 
   "androidx.room:room-runtime": "@ohos/relationalStore",
   "androidx.room:room-ktx": "@ohos/relationalStore",
@@ -15,9 +15,9 @@
   "androidx.navigation:navigation-fragment-ktx": "@ohos/router",
   "androidx.navigation:navigation-ui-ktx": "@ohos/router",
 
-  "androidx.recyclerview:recyclerview": "",
-  "androidx.cardview:cardview": "",
-  "com.google.android.material:material": "",
+  "androidx.recyclerview:recyclerview": "builtin",
+  "androidx.cardview:cardview": "builtin",
+  "com.google.android.material:material": "builtin",
 
   "androidx.datastore:datastore-preferences": "@ohos/dataPreferences",
   "androidx.datastore:datastore": "@ohos/dataPreferences",
@@ -35,18 +35,25 @@
   "com.github.bumptech.glide:glide": "",
   "com.squareup.picasso:picasso": "",
 
-  "com.jakewharton.timber:timber": "",
+  "com.jakewharton.timber:timber": "builtin",
 
-  "com.google.dagger:hilt-android": "",
-  "io.insert-koin:koin-android": "",
+  "com.google.dagger:hilt-android": "builtin",
+  "io.insert-koin:koin-android": "builtin",
 
-  "org.jetbrains.kotlinx:kotlinx-coroutines-android": "",
-  "org.jetbrains.kotlinx:kotlinx-coroutines-core": "",
+  "org.jetbrains.kotlinx:kotlinx-coroutines-android": "builtin",
+  "org.jetbrains.kotlinx:kotlinx-coroutines-core": "builtin",
 
   "androidx.work:work-runtime-ktx": "@ohos/backgroundTaskManager",
 
   "com.google.android.gms:play-services-maps": "",
   "com.google.android.gms:play-services-location": "@ohos/geoLocationManager",
 
-  "androidx.test.espresso:espresso-idling-resource": ""
+  "androidx.test.espresso:espresso-idling-resource": "builtin",
+  "androidx.test:core": "builtin",
+
+  "androidx.annotation:annotation": "builtin",
+  "androidx.legacy:legacy-support-v4": "builtin",
+  "org.jetbrains.kotlin:kotlin-stdlib-jdk7": "builtin",
+  "org.jetbrains.kotlin:kotlin-stdlib": "builtin",
+  "org.jetbrains.kotlin:kotlin-stdlib-jdk8": "builtin"
 }

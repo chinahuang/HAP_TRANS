@@ -21,8 +21,13 @@ class GradleTransform:
             key = f"{group}:{artifact}"
             if key in self.dependency_map:
                 ohos_pkg = self.dependency_map[key]
-                if ohos_pkg:  # 空字符串表示无对应包
+                if ohos_pkg == "builtin":
+                    pass  # HarmonyOS 内置支持，无需额外包，计为已映射
+                elif ohos_pkg:
                     deps[ohos_pkg] = "*"
+                # 空字符串：无对应包，计为未映射
+                else:
+                    unmapped.append((group, artifact, version))
             else:
                 unmapped.append((group, artifact, version))
 
