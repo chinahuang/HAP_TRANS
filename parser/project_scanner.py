@@ -182,16 +182,28 @@ class ProjectScanner:
         return result
 
     def _collect_layout_files(self, src_main: str) -> List[str]:
+        """
+        只收集 res/layout/ 目录下的 XML 文件，跳过限定符目录
+        （layout-land、layout-h900dp、layout-xlarge 等），
+        避免同名文件覆盖导致布局丢失。
+        """
         result = []
         layout_root = os.path.join(src_main, "res")
         if not os.path.isdir(layout_root):
             return result
         for entry in os.scandir(layout_root):
-            if entry.is_dir() and entry.name.startswith("layout"):
-                for dirpath, _, files in os.walk(entry.path):
-                    for f in files:
-                        if f.endswith(".xml"):
-                            result.append(os.path.join(dirpath, f))
+            # 只处理 "layout"（精确匹配）或 "layout-*"（带限定符）
+            if not (entry.is_dir() and entry.name.startswith("layout")):
+                continue
+            # 跳过限定符目录（layout-land, layout-h900dp, layout-xlarge …）
+            # 只收集 res/layout/ 本体；有限定符的 layout 是屏幕适配覆盖，
+            # HarmonyOS 用 Resource Qualifier 机制，不需要重复转换
+            if entry.name != "layout":
+                continue
+            for dirpath, _, files in os.walk(entry.path):
+                for f in files:
+                    if f.endswith(".xml"):
+                        result.append(os.path.join(dirpath, f))
         return result
 
     def _collect_res_dirs(self, src_main: str, prefix: str) -> List[str]:

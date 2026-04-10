@@ -20,6 +20,40 @@ _ANDROID_IMPORT_PREFIXES = (
     "android.", "androidx.", "kotlin.", "kotlinx.",
     "com.google.android.", "com.example.android.",
     "dagger.", "hilt.", "javax.inject.",
+    "com.google.dagger.", "com.google.accompanist.",
+    "com.squareup.", "io.coil", "com.github.bumptech.",
+    "com.jakewharton.",
+)
+
+# Hilt / DI / Room 注解（在 ArkTS 中无意义，转换后应删除）
+_HILT_ANNO_RE = re.compile(
+    r'^\s*@(?:'
+    r'InstallIn\s*\([^)]*\)'
+    r'|HiltAndroidApp'
+    r'|AndroidEntryPoint'
+    r'|HiltViewModel'
+    r'|HiltWorker'
+    r'|Module'
+    r'|Provides'
+    r'|Binds'
+    r'|Singleton'
+    r'|ActivityScoped'
+    r'|ViewModelScoped'
+    r'|IntoSet|IntoMap'
+    r'|Inject'
+    r'|AssistedInject|Assisted'
+    r'|Database\s*\([^)]*\)'
+    r'|Dao'
+    r'|Entity\s*\([^)]*\)'
+    r'|PrimaryKey(?:\s*\([^)]*\))?'
+    r'|ColumnInfo\s*\([^)]*\)'
+    r'|ForeignKey\s*\([^)]*\)'
+    r'|Relation\s*\([^)]*\)'
+    r'|Upsert|Insert|Update|Delete|Query\s*\([^)]*\)'
+    r'|TypeConverters\s*\([^)]*\)'
+    r'|WorkerThread'
+    r')\s*$',
+    re.MULTILINE,
 )
 
 
@@ -29,6 +63,8 @@ class ArkTSCleanup:
         code = self._convert_sealed_class(code)
         code = self._remove_package(code)
         code = self._remove_android_imports(code)
+        code = self._remove_internal_imports(code)
+        code = self._remove_di_annotations(code)
         code = self._convert_enum_class(code)
         code = self._convert_data_class(code)
         code = self._remove_room_annotations(code)
@@ -231,6 +267,46 @@ class ArkTSCleanup:
                     continue   # drop line
             result.append(line)
         return "\n".join(result)
+
+    def _remove_internal_imports(self, code: str) -> str:
+        """
+        删除工程内部 import（非 HarmonyOS 包、非 '@' 路径导入）。
+        保留：import ... from '@...'  / import hilog ...  / // 注释行
+        删除：import com.example.*/com.google.samples.*/com.thecodemonks.*/
+              以及其他所有剩余的 Java/Kotlin 风格包导入
+        """
+        lines = code.split("\n")
+        result = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith("import "):
+                result.append(line)
+                continue
+            # 保留 HarmonyOS 风格的 import（from '@xxx' 或无包名短导入）
+            if "from '" in stripped or 'from "' in stripped:
+                result.append(line)
+                continue
+            # 保留已替换的 hilog/Want/preferences 等单词 import
+            module = stripped[7:].split()[0].rstrip(';')
+            if not '.' in module:
+                result.append(line)
+                continue
+            # 删除所有剩余的 Java 包路径风格 import
+            # (com.xxx, org.xxx, io.xxx, net.xxx, 以及项目自身包)
+            result.append(f"// removed: {stripped}")
+        return "\n".join(result)
+
+    def _remove_di_annotations(self, code: str) -> str:
+        """
+        删除 Hilt/Dagger/Room 注解行（这些在 ArkTS 中无意义）。
+        只删除独占一行的注解，不影响多行表达式。
+        """
+        code = _HILT_ANNO_RE.sub('', code)
+        # @Inject constructor(...) → constructor(...)
+        code = re.sub(r'@Inject\s+constructor', 'constructor', code)
+        # @Inject\n    val foo → val foo
+        code = re.sub(r'@Inject\s*\n(\s*(?:val|var|private|protected))', r'\1', code)
+        return code
 
     def _fix_class_decl(self, code: str) -> str:
         # struct Foo {) { → struct Foo {  (Fragment 残余 Kotlin `)`)
